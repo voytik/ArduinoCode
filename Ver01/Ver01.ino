@@ -40,8 +40,8 @@ const int echoPin = 3;
 char WiFiName[32] = "ddfk";
 char WiFiPass[32] = "lepsinezdefault";
 int MobilePort = 8090;
-char ServerAddress[32] = "";
-char ServerAuth[32] = "";
+char ServerAddress[1] = "";
+char ServerAuth[1] = "";
 long machineID = 1; 
 int UpperLimit = 10;
 int UpperTrshld = 10;
@@ -66,7 +66,7 @@ HX711 scale(A1, A0);  //HX711.PD_SCK pin #A0, HX711.DOUT pin #A1
 void setup(void)
 {
     Serial.begin(38400);
-    Serial.print("setup begin\r\n");
+    Serial.print(F("setup begin\r\n"));
     
     //read the settings from EEPROM
     getAdr_EEPROM();
@@ -77,18 +77,18 @@ void setup(void)
     start_TCP();
     
     
-    Serial.print("Weight measurement setup\r\n");
+    Serial.print(F("Weight measurement setup\r\n"));
     scale.set_scale(-20152.8f);                      // this value is obtained by calibrating the scale with known weights; see the README for details
     scale.tare();				        // reset the scale to 0
     
-    Serial.print("setup end\r\n");
+    Serial.print(F("setup end\r\n"));
 }
  
 void loop(void)
 {
     if(MEMORY)
     {
-      Serial.print("Free memory beginning: ");
+      Serial.print(F("Free memory beginning: "));
       Serial.println(freeRam());
     }
     
@@ -103,20 +103,26 @@ void loop(void)
     }else{ 
       if (command.indexOf("StartPosWeight") >= 0)
       {
-        Serial.println("StartPosWeight command received"); 
+        Serial.println(F("StartPosWeight command received")); 
         startPosWeight = true;               
       }
       if (command.indexOf("StopPosWeight") >= 0)
       {
-        Serial.println("StopPosWeight command received");
+        Serial.println(F("StopPosWeight command received"));
         startPosWeight = false;    
         sendStopConfirmation();    
       }
       if (command.indexOf("GetPositionCalibration") >= 0)
       {
-        Serial.println("GetPositionCalibration command received");
+        Serial.println(F("GetPositionCalibration command received"));
         startPosWeight = false;    
         sendPositionCalibration();    
+      }
+      if (command.indexOf("UpperLimit") >= 0)
+      {
+        Serial.println(F("Position calibration data received"));
+        startPosWeight = false;    
+        setPositionCalibration(command);    
       }
     }  
             
@@ -126,11 +132,17 @@ void loop(void)
     }    
       
     
-    
+    // If 5 send errors disable the PosWeight sending
+    if (TCPcounter >5)
+    {
+      TCPcounter = 0;
+      startPosWeight = false;
+      Serial.println(F("Sending stopped"));
+    }
     
     if(MEMORY)
     {
-      Serial.print("Free memory ending: ");
+      Serial.print(F("Free memory ending: "));
       Serial.println(freeRam());
     }
 }
@@ -139,18 +151,18 @@ String receiveMsg()
 {   
     //receive data
     String s;
-    uint8_t buffer[128] = {0};
+    uint8_t buffer[75] = {0};
     uint32_t len = wifi.recv(&mux_id, buffer, sizeof(buffer), 100);
     if (len > 0) {  
       
-        Serial.print("Received from :");
+        Serial.print(F("Received from :"));
         Serial.print(mux_id);
-        Serial.print("[");
+        Serial.print(F("["));
         for(uint32_t i = 0; i < (len-0); i++) {
             Serial.print((char)buffer[i]);
             s += (char)buffer[i];
         }
-        Serial.print("]\r\n");         
+        Serial.print(F("]\r\n"));         
     }
     return s;
 }
@@ -173,15 +185,15 @@ void  sendPositionCalibration()
     bool sent = false;
     do {
       if(wifi.send(mux_id, (const uint8_t*)buf, strlen(buf))) {
-         Serial.print(buf);
-         Serial.println("Position calibration data send");
+         Serial.println(buf);
+         Serial.println(F("Position calibration data send"));
          sent = true;    
       }else{           
-        Serial.print("Calibration data send error\r\n");
+        Serial.println(F("Calibration data send error"));
         Serial.println(sendCount);
         sendCount++;
       }
-    }while(!sent || sendCount < 10 );
+    }while(!sent && sendCount < 10 );
 }
 
 void sendStopConfirmation()
@@ -193,8 +205,41 @@ void sendStopConfirmation()
     if(wifi.send(mux_id, (const uint8_t*)buf, strlen(buf))) {
        Serial.print(buf);    
     }else{           
-      Serial.print("Send error\r\n");
+      Serial.print(F("Send error\r\n"));
     }
+}
+
+void setPositionCalibration(String msg)
+{
+  StaticJsonBuffer<JSON_OBJECT_SIZE(4)> jsonBuffer;  //+ JSON_ARRAY_SIZE(2)
+  char buf[75];
+  msg.toCharArray(buf, strlen(buf));
+  JsonObject& root = jsonBuffer.parseObject(buf);
+  
+  if (!root.success())
+  {
+    Serial.println(F("Position calibration JSON parse failed"));
+    return;
+  }
+  
+  UpperLimit = root["UpperLimit"];
+  UpperTrshld = root["UpperTrshld"];
+  BottomTrshld = root["BottomTrshld"];
+  BottomLimit = root["BottomLimit"];
+  
+  Serial.print(F("Position calibration data decoded: "));
+  Serial.print(F("BottomLimit: "));
+  Serial.println(BottomLimit);
+  
+  // send confirmation message
+  char buffer[30] = "PositionCalibrationReceived";
+  
+   // try to send the data
+  if(wifi.send(mux_id, (const uint8_t*)buf, strlen(buf))) {
+     Serial.print(buf);    
+  }else{           
+    Serial.print(F("Send error\r\n"));
+  }
 }
 
 void sendPosWeight()
@@ -206,7 +251,7 @@ void sendPosWeight()
     float weight = scale.get_units();
     
     //prepare data string
-    char buf[100] = "";
+    char buf[70] = "";
     
     // create JSON message
     StaticJsonBuffer<JSON_OBJECT_SIZE(3)> jsonBuffer;  //+ JSON_ARRAY_SIZE(2)
@@ -214,79 +259,73 @@ void sendPosWeight()
       message["machineID"] = machineID;
       message["position"] = cm;
       message["weight"] = weight;
-    message.printTo(buf, sizeof(buf));
-    
-    // add enter (to delete later)    
-    char ch[5] = " \r\n";
-    for (int i=0; i < 5; i++)
-    {
-      append(buf, 100, ch[i]);
-    }  
-        
+    message.printTo(buf, sizeof(buf));    
+ 
     // try to send the data
     if(wifi.send(mux_id, (const uint8_t*)buf, strlen(buf))) {
-       Serial.print(buf);    
+       Serial.println(buf);    
     }else{           
-      Serial.print("Send error\r\n");
+      Serial.print(F("Send error\r\n"));
+      TCPcounter++;
     }
 }
 
 void stopTCP()
 {   
   if (wifi.releaseTCP(mux_id)) {
-            Serial.print("release tcp ");
+            Serial.print(F("release tcp "));
             Serial.print(mux_id);
-            Serial.println(" ok");
+            Serial.println(F(" ok"));
         } else {
-            Serial.print("release tcp");
+            Serial.print(F("release tcp"));
             Serial.print(mux_id);
-            Serial.println(" err");
+            Serial.println(F(" err"));
         }
         
-        Serial.print("Status:[");
+        Serial.print(F("Status:["));
         Serial.print(wifi.getIPStatus().c_str());
-        Serial.println("]");
+        Serial.println(F("]"));
   
 }
 
 void setup_wifi()
 {  
     wifi.restart();
-    Serial.print("FW Version:");
+    Serial.print(F("FW Version:"));
     Serial.println(wifi.getVersion().c_str());
       
     if (wifi.setOprToStationSoftAP()) {
-        Serial.print("to station + softap ok\r\n");
+        Serial.print(F("to station + softap ok\r\n"));
     } else {
-        Serial.print("to station + softap err\r\n");
+        Serial.print(F("to station + softap err\r\n"));
     }
  
     if (wifi.joinAP(WiFiName, WiFiPass)) {
-        Serial.print("Join AP success\r\n");
-        Serial.print("IP: ");
+        Serial.print(F("Join AP success\r\n"));
+        Serial.print(F("IP: "));
         Serial.println(wifi.getLocalIP().c_str());    
     } else {
-        Serial.print("Join AP failure\r\n");
+        Serial.print(F("Join AP failure\r\n"));
     }
     
     if (wifi.enableMUX()) {
-        Serial.print("multiple ok\r\n");
+        Serial.print(F("multiple ok\r\n"));
     } else {
-        Serial.print("multiple err\r\n");
+        Serial.print(F("multiple err\r\n"));
     }  
 }
 
 void start_TCP()
 {
    if (wifi.startTCPServer(MobilePort)) {
-        Serial.print("start tcp server ok\r\n");
+        Serial.print(F("start tcp server ok\r\n"));
     } else {
-        Serial.print("start tcp server err\r\n");
+        Serial.print(F("start tcp server err\r\n"));
     }    
     if (wifi.setTCPServerTimeout(10)) { 
-        Serial.print("set tcp server timout 10 seconds\r\n");
+        Serial.print(F("set tcp server timout 10 seconds\r\n"));
     } else {
-        Serial.print("set tcp server timout err\r\n");
+        Serial.print(F("set tcp server timout err\r\n"));
     }
  }
  
@@ -305,14 +344,14 @@ void write_EEPROM()
 
 void read_EEPROM()
 {
-  Serial.println("Data read from EEPROM:");
+  Serial.println(F("Data read from EEPROM:"));
   
   EEPROM.readBlock(adrWiFiName, WiFiName, 32);
-  Serial.print("WiFiName: ");
+  Serial.print(F("WiFiName: "));
   Serial.println(WiFiName);
   
   EEPROM.readBlock(adrWiFiPass, WiFiPass, 32);
-  Serial.print("WiFiPass: ");
+  Serial.print(F("WiFiPass: "));
   Serial.println(WiFiPass);
   
   MobilePort = EEPROM.readInt(adrMobilePort);
@@ -330,7 +369,7 @@ void read_EEPROM()
   */
   
   machineID = EEPROM.readLong(adrmachineID);
-  Serial.print("MachineID: ");
+  Serial.print(F("MachineID: "));
   Serial.println(machineID);
 }
 
