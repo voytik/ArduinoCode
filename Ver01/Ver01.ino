@@ -112,7 +112,7 @@ void loop(void)
         startPosWeight = false;    
         sendStopConfirmation();    
       }
-      if (command.indexOf("GetPositionCalibration") >= 0)
+      if (command.indexOf("GetPosCal") >= 0)
       {
         Serial.println(F("GetPositionCalibration command received"));
         startPosWeight = false;    
@@ -154,7 +154,7 @@ String receiveMsg()
     uint8_t buffer[75] = {0};
     uint32_t len = wifi.recv(&mux_id, buffer, sizeof(buffer), 100);
     if (len > 0) {  
-      
+        
         Serial.print(F("Received from :"));
         Serial.print(mux_id);
         Serial.print(F("["));
@@ -162,7 +162,8 @@ String receiveMsg()
             Serial.print((char)buffer[i]);
             s += (char)buffer[i];
         }
-        Serial.print(F("]\r\n"));         
+        Serial.print(F("]\r\n")); 
+        Serial.println(len);        
     }
     return s;
 }
@@ -227,7 +228,7 @@ void setPositionCalibration(String msg)
   BottomTrshld = root["BottomTrshld"];
   BottomLimit = root["BottomLimit"];
   
-  Serial.print(F("Position calibration data decoded: "));
+  Serial.println(F("Position calibration data decoded: "));
   Serial.print(F("BottomLimit: "));
   Serial.println(BottomLimit);
   
@@ -236,9 +237,9 @@ void setPositionCalibration(String msg)
   
    // try to send the data
   if(wifi.send(mux_id, (const uint8_t*)buf, strlen(buf))) {
-     Serial.print(buf);    
+     Serial.println(buf);    
   }else{           
-    Serial.print(F("Send error\r\n"));
+    Serial.println(F("Send error\r\n"));
   }
 }
 
