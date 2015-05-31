@@ -44,9 +44,10 @@ char ServerAddress[1] = "";
 char ServerAuth[1] = "";
 long machineID = 1; 
 int UpperLimit = 10;
-int UpperTrshld = 10;
-int BottomTrshld = 10;
-int BottomLimit = 10;
+int UpperTrshld = 50;
+int BottomTrshld = 150;
+int BottomLimit = 170;
+float weightCal[5];
 
 //EEPROM addresses
 int adrWiFiName = 0; 
@@ -56,12 +57,18 @@ int adrServerAddress = 0;
 int adrServerAuth = 0;
 int adrmachineID = 0;
 
+//counting helper variables
+int repetitonCount = 0;
+bool countFlag = true;
+
 int TCPcounter = 0;
 uint8_t mux_id = 0;
 bool startPosWeight = false;
 
 // setting for weight measurement
 HX711 scale(A1, A0);  //HX711.PD_SCK pin #A0, HX711.DOUT pin #A1
+
+//------------------ STETUP ----------------------------------------------------------------------
 
 void setup(void)
 {
@@ -84,6 +91,8 @@ void setup(void)
     Serial.print(F("setup end\r\n"));
 }
  
+//------------------ START OF LOOP ------------------------------------------------------------------
+
 void loop(void)
 {
     if(MEMORY)
@@ -92,9 +101,8 @@ void loop(void)
       Serial.println(freeRam());
     }
     
-    String command = receiveMsg();
-    
-    
+   String command = receiveMsg();
+	
 
     if (command == "")
     {
@@ -110,6 +118,7 @@ void loop(void)
       {
         Serial.println(F("StopPosWeight command received"));
         startPosWeight = false;    
+		repetitonCount = 0;
         sendStopConfirmation();    
       }
       if (command.indexOf("GetPosCal") >= 0)
@@ -124,6 +133,18 @@ void loop(void)
         startPosWeight = false;    
         setPositionCalibration(command);    
       }
+	  if (command.indexOf("GetWeightCal") >= 0)
+	  {
+		  Serial.println(F("GetWeightCalibration command received"));
+		  startPosWeight = false;
+		  sendWeightCalibration();
+	  }
+	  if (command.indexOf("GetSettings") >= 0)
+	  {
+		  Serial.println(F("GetSettings command received"));
+		  startPosWeight = false;
+		  sendSettings();
+	  }
     }  
             
     if (startPosWeight)
@@ -147,25 +168,49 @@ void loop(void)
     }
 }
 
-String receiveMsg()
-{   
-    //receive data
-    String s;
-    uint8_t buffer[75] = {0};
-    uint32_t len = wifi.recv(&mux_id, buffer, sizeof(buffer), 100);
-    if (len > 0) {  
-        
-        Serial.print(F("Received from :"));
-        Serial.print(mux_id);
-        Serial.print(F("["));
-        for(uint32_t i = 0; i < (len-0); i++) {
-            Serial.print((char)buffer[i]);
-            s += (char)buffer[i];
-        }
-        Serial.print(F("]\r\n")); 
-        Serial.println(len);        
-    }
-    return s;
+//--------------------- END OF LOOP -------------------------------------------------------------------------
+
+// ------------------MACHINE FUNCTIONS  ---------------------------------------------------------------------
+void sendSettings()
+{
+	//prepare data string
+	char buf[75] = "";
+	// create JSON message
+	StaticJsonBuffer<JSON_OBJECT_SIZE(3)> jsonBuffer;  //+ JSON_ARRAY_SIZE(2)
+	JsonObject& message = jsonBuffer.createObject();
+	message["WiFiName"] = WiFiName;
+	message["WiFiPass"] = WiFiPass;
+	message["MobilePort"] = MobilePort;
+	message.printTo(buf, sizeof(buf));
+
+	// try to send the data
+	int sendCount = 0;
+	bool sent = false;
+	do {
+		sent = sendMsgBuf(buf, 75);
+	} while (!sent && sendCount < 10);
+}
+
+
+void  sendWeightCalibration()
+{
+	//prepare data string
+	char buf[75] = "";
+	// create JSON message
+	StaticJsonBuffer<JSON_OBJECT_SIZE(4)> jsonBuffer;  //+ JSON_ARRAY_SIZE(2)
+	JsonObject& message = jsonBuffer.createObject();
+	message["W0"] = weightCal[0];
+	message["W10"] = weightCal[1];
+	message["W20"] = weightCal[2];
+	message["W30"] = weightCal[3];
+	message.printTo(buf, sizeof(buf));
+
+	// try to send the data
+	int sendCount = 0;
+	bool sent = false;
+	do {
+		sent = sendMsgBuf(buf, 75);
+	} while (!sent && sendCount < 10);
 }
 
 void  sendPositionCalibration()
@@ -185,40 +230,27 @@ void  sendPositionCalibration()
     int sendCount = 0;
     bool sent = false;
     do {
-      if(wifi.send(mux_id, (const uint8_t*)buf, strlen(buf))) {
-         Serial.println(buf);
-         Serial.println(F("Position calibration data send"));
-         sent = true;    
-      }else{           
-        Serial.println(F("Calibration data send error"));
-        Serial.println(sendCount);
-        sendCount++;
-      }
+		sent = sendMsgBuf(buf, 75);	
     }while(!sent && sendCount < 10 );
 }
 
 void sendStopConfirmation()
 {
-    //prepare data string
-    char buf[30] = "MeasurementStopped";
-    
-     // try to send the data
-    if(wifi.send(mux_id, (const uint8_t*)buf, strlen(buf))) {
-       Serial.print(buf);    
-    }else{           
-      Serial.print(F("Send error\r\n"));
-    }
+	sendMsg(F("MeasurementStopped"));	
 }
 
 void setPositionCalibration(String msg)
 {
+  Serial.println(msg);
+
   StaticJsonBuffer<JSON_OBJECT_SIZE(4)> jsonBuffer;  //+ JSON_ARRAY_SIZE(2)
-  char buf[75];
-  msg.toCharArray(buf, strlen(buf));
+  char buf[msg.length()+1];
+  ((String)msg).toCharArray(buf, msg.length() + 1);
   JsonObject& root = jsonBuffer.parseObject(buf);
   
   if (!root.success())
   {
+	Serial.println(buf);
     Serial.println(F("Position calibration JSON parse failed"));
     return;
   }
@@ -233,14 +265,8 @@ void setPositionCalibration(String msg)
   Serial.println(BottomLimit);
   
   // send confirmation message
-  char buffer[30] = "PositionCalibrationReceived";
-  
-   // try to send the data
-  if(wifi.send(mux_id, (const uint8_t*)buf, strlen(buf))) {
-     Serial.println(buf);    
-  }else{           
-    Serial.println(F("Send error\r\n"));
-  }
+  sendMsg("PosCalReceived");
+ 
 }
 
 void sendPosWeight()
@@ -250,25 +276,91 @@ void sendPosWeight()
     
     //measure weight
     float weight = scale.get_units();
-    
+
+	// count the repetitons
+	if (cm < UpperTrshld && countFlag == false)
+	{
+		repetitonCount++;
+		countFlag = true;
+	}
+	if (cm > BottomTrshld && countFlag == true)
+	{
+		countFlag = false;
+	}
+
     //prepare data string
     char buf[70] = "";
     
     // create JSON message
-    StaticJsonBuffer<JSON_OBJECT_SIZE(3)> jsonBuffer;  //+ JSON_ARRAY_SIZE(2)
+    StaticJsonBuffer<JSON_OBJECT_SIZE(4)> jsonBuffer;  //+ JSON_ARRAY_SIZE(2)
     JsonObject& message = jsonBuffer.createObject();
       message["machineID"] = machineID;
       message["position"] = cm;
       message["weight"] = weight;
+	  message["count"] = repetitonCount;
     message.printTo(buf, sizeof(buf));    
  
     // try to send the data
-    if(wifi.send(mux_id, (const uint8_t*)buf, strlen(buf))) {
-       Serial.println(buf);    
-    }else{           
-      Serial.print(F("Send error\r\n"));
-      TCPcounter++;
-    }
+	sendMsgBuf(buf, 70);
+}
+
+String receiveMsg()
+{
+	//receive data
+	String s;
+	uint8_t buffer[75] = { 0 };
+	uint32_t len = wifi.recv(&mux_id, buffer, sizeof(buffer), 500);	
+	if (len > 0) {
+
+		Serial.print(F("Received: "));
+		for (uint32_t i = 0; i < (len - 0); i++) {
+			Serial.print((char)buffer[i]);
+			s += (char)buffer[i];
+		}
+		Serial.print(F(", length: "));
+		Serial.println(len);
+	}
+	return s;
+}
+
+// ----------------------- HELPER FUNCTIONS
+
+bool sendMsg(String message)
+{
+	// Create buffer 
+	int length = message.length()+1;
+	char * buffer = new char[length];
+	message.toCharArray(buffer, length, 0);
+
+	// try to send the data
+	if (wifi.send(mux_id, (const uint8_t*)buffer, length))
+	{
+		Serial.print(F("Sent: "));
+		Serial.println(buffer);
+	}
+	else{
+		Serial.print(F("Send error: "));
+		Serial.println(buffer);
+		TCPcounter++;
+	}
+
+	return true;
+}
+
+bool sendMsgBuf(char * buffer, int size)
+{
+	// try to send the data
+	if (wifi.send(mux_id, (const uint8_t*)buffer, size))
+	{
+		//Serial.print(F("Sent: "));
+		//Serial.println(buffer);
+	}
+	else{
+		Serial.print(F("Send error: "));
+		Serial.println(buffer);
+	}
+
+	return true;
 }
 
 void stopTCP()
@@ -309,11 +401,13 @@ void setup_wifi()
         Serial.print(F("Join AP failure\r\n"));
     }
     
+	
     if (wifi.enableMUX()) {
         Serial.print(F("multiple ok\r\n"));
     } else {
         Serial.print(F("multiple err\r\n"));
     }  
+	
 }
 
 void start_TCP()
@@ -330,6 +424,7 @@ void start_TCP()
     }
  }
  
+// ------------------------------------ EEPROM FUNCTIONS ----------------------------------------------------------
 
 void write_EEPROM()
 {
@@ -383,6 +478,8 @@ void getAdr_EEPROM()
    adrServerAuth = EEPROM.getAddress(sizeof(char)*32); 
    adrmachineID = EEPROM.getAddress(sizeof(long)); 
 }
+
+// -------------------- SENSORS FUNCTIONS-------------------------------------------------------
 
 int measure_distance()
 {
